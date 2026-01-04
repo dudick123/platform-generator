@@ -1,0 +1,55 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ policy_name }}
+  namespace: {{ namespace_name }}
+  labels:
+{% for key, value in labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{%- if description %}
+  annotations:
+    description: "{{ description }}"
+{%- endif %}
+spec:
+  endpointSelector: {}
+{%- if ingress_rules %}
+  ingress:
+{% for rule in ingress_rules %}
+    - {% if rule.from_ %}fromCIDR:
+{% for peer in rule.from_ %}
+{% if peer.ipBlock %}
+      - {{ peer.ipBlock.cidr }}
+{% endif %}
+{% endfor %}
+      {% endif %}
+{%- if rule.ports %}
+      toPorts:
+{% for port in rule.ports %}
+      - ports:
+        - port: "{{ port.port }}"
+          protocol: {{ port.protocol }}
+{% endfor %}
+{%- endif %}
+{% endfor %}
+{% endif %}
+{%- if egress_rules %}
+  egress:
+{% for rule in egress_rules %}
+    - {% if rule.to %}toCIDR:
+{% for peer in rule.to %}
+{% if peer.ipBlock %}
+      - {{ peer.ipBlock.cidr }}
+{% endif %}
+{% endfor %}
+      {% endif %}
+{%- if rule.ports %}
+      toPorts:
+{% for port in rule.ports %}
+      - ports:
+        - port: "{{ port.port }}"
+          protocol: {{ port.protocol }}
+{% endfor %}
+{%- endif %}
+{% endfor %}
+{%- endif %}

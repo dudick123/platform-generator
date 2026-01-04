@@ -1,0 +1,19 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-same-namespace
+  namespace: {{ namespace_name }}
+  labels:
+{% for key, value in labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+  annotations:
+    description: "Allow pod-to-pod communication within the same namespace"
+spec:
+  endpointSelector: {}
+  ingress:
+    - fromEndpoints:
+      - {}
+  egress:
+    - toEndpoints:
+      - {}

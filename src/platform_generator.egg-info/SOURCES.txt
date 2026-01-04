@@ -1,0 +1,16 @@
+README.md
+pyproject.toml
+src/platform_generator/__init__.py
+src/platform_generator/cli.py
+src/platform_generator.egg-info/PKG-INFO
+src/platform_generator.egg-info/SOURCES.txt
+src/platform_generator.egg-info/dependency_links.txt
+src/platform_generator.egg-info/entry_points.txt
+src/platform_generator.egg-info/requires.txt
+src/platform_generator.egg-info/top_level.txt
+src/platform_generator/config/__init__.py
+src/platform_generator/config/models.py
+src/platform_generator/config/parser.py
+src/platform_generator/generators/__init__.py
+src/platform_generator/validators/__init__.py
+src/platform_generator/writers/__init__.py

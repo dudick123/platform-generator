@@ -1,0 +1,20 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-to-database
+  namespace: bar-gitops-dev
+  labels:
+    platform.foo-org.com/tenant: "bar"
+    platform.foo-org.com/environment: "dev"
+    platform.foo-org.com/managed-by: "platform-generator"
+    team: "bar"
+    business-unit: "sales"
+  annotations:
+    description: "Allow egress to database CIDR"spec:
+  endpointSelector: {}  egress:
+    - toCIDR:
+      - 10.100.0.0/16
+      toPorts:
+      - ports:
+        - port: "5432"
+          protocol: TCP

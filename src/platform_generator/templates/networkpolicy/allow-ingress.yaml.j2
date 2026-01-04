@@ -1,0 +1,30 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-from-ingress
+  namespace: {{ namespace_name }}
+  labels:
+{% for key, value in labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+  annotations:
+    description: "Allow traffic from ingress controllers"
+spec:
+  endpointSelector: {}
+  ingress:
+{%- if ingress_namespaces %}
+{% for ns in ingress_namespaces %}
+    - fromEndpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: {{ ns }}
+{% endfor %}
+{%- endif %}
+{%- if ingress_labels %}
+{% for label_set in ingress_labels %}
+    - fromEndpoints:
+      - matchLabels:
+{% for key, value in label_set.items() %}
+          {{ key }}: {{ value }}
+{% endfor %}
+{% endfor %}
+{%- endif %}

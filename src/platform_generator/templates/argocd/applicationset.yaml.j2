@@ -1,0 +1,52 @@
+# Deploy to AKP instance: {{ akp_instance_url }}
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: {{ applicationset_name }}
+  namespace: {{ namespace }}
+  labels:
+{% for key, value in labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{%- if annotations %}
+  annotations:
+{% for key, value in annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{%- endif %}
+spec:
+  generators:
+    - git:
+        repoURL: {{ config_repo_url }}
+        revision: {{ config_repo_revision }}
+        files:
+{% for file_spec in config_repo_files %}
+          - path: {{ file_spec.path }}
+{% endfor %}
+  template:
+    metadata:
+      name: {% raw %}'{{ cluster }}-{{ app }}'{% endraw %}
+
+      labels:
+{% for key, value in labels.items() %}
+        {{ key }}: "{{ value }}"
+{% endfor %}
+    spec:
+      project: {{ project_name }}
+      source:
+        repoURL: {{ app_repo_url }}
+        targetRevision: HEAD
+        path: {% raw %}'{{ path }}'{% endraw %}
+
+      destination:
+        server: {% raw %}'{{ server }}'{% endraw %}
+
+        namespace: {{ destination_namespace }}
+{% if sync_policy %}
+      syncPolicy:
+        automated:
+          prune: {{ sync_policy.automated.prune | lower }}
+          selfHeal: {{ sync_policy.automated.selfHeal | lower }}
+        syncOptions:
+          - CreateNamespace=false
+{%- endif %}

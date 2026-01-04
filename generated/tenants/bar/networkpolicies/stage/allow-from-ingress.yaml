@@ -1,0 +1,21 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-from-ingress
+  namespace: bar-gitops-stage
+  labels:
+    platform.foo-org.com/tenant: "bar"
+    platform.foo-org.com/environment: "stage"
+    platform.foo-org.com/managed-by: "platform-generator"
+    team: "bar"
+    business-unit: "sales"
+  annotations:
+    description: "Allow traffic from ingress controllers"
+spec:
+  endpointSelector: {}
+  ingress:    - fromEndpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: ingress-nginx
+    - fromEndpoints:
+      - matchLabels:
+          app: nginx-ingress

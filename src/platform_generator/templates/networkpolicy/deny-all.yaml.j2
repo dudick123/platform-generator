@@ -1,0 +1,14 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: {{ namespace_name }}
+  labels:
+{% for key, value in labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+  annotations:
+    description: "Default deny all ingress and egress traffic"
+spec:
+  endpointSelector: {}
+  # Empty ingress and egress rules mean deny all traffic

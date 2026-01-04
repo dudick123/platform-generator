@@ -1,0 +1,38 @@
+# Deploy to AKP instance: {{ akp_instance_url }}
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: {{ project_name }}
+  namespace: {{ namespace }}
+  labels:
+{% for key, value in labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{%- if annotations %}
+  annotations:
+{% for key, value in annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{%- endif %}
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: {{ description }}
+  sourceRepos:
+{% for repo in source_repos %}
+    - {{ repo }}
+{% endfor %}
+  destinations:
+{% for dest in destinations %}
+    - namespace: {{ dest.namespace }}
+      server: {{ dest.server }}
+      name: {{ dest.name }}
+{% endfor %}
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  orphanedResources:
+    warn: true

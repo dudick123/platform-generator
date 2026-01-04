@@ -1,0 +1,16 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: bar-gitops-stage
+  labels:
+    platform.foo-org.com/tenant: "bar"
+    platform.foo-org.com/environment: "stage"
+    platform.foo-org.com/managed-by: "platform-generator"
+    team: "bar"
+    business-unit: "sales"
+  annotations:
+    description: "Default deny all ingress and egress traffic"
+spec:
+  endpointSelector: {}
+  # Empty ingress and egress rules mean deny all traffic

@@ -1,3 +1,22 @@
+Metadata-Version: 2.4
+Name: platform-generator
+Version: 0.1.0
+Summary: GitOps Platform Generator CLI for Kubernetes and ArgoCD manifests
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: typer[all]>=0.12.0
+Requires-Dist: pydantic>=2.5.0
+Requires-Dist: ruamel.yaml>=0.18.0
+Requires-Dist: jinja2>=3.1.0
+Requires-Dist: rich>=13.7.0
+Requires-Dist: kubernetes>=28.1.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.1.0; extra == "dev"
+Requires-Dist: black>=23.12.0; extra == "dev"
+Requires-Dist: ruff>=0.1.9; extra == "dev"
+Requires-Dist: mypy>=1.8.0; extra == "dev"
+
 # GitOps Platform Generator CLI
 
 A Python CLI tool for generating Kubernetes and ArgoCD manifests from declarative YAML configuration, designed for multi-tenant GitOps deployments.

@@ -1,0 +1,38 @@
+# Deploy to AKP instance: https://dev.akp.foo-org.com
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tenant-bar
+  namespace: argocd
+  labels:
+    platform.foo-org.com/tenant: "bar"
+    platform.foo-org.com/environment: "dev"
+    platform.foo-org.com/managed-by: "platform-generator"
+    team: "bar"
+    business-unit: "sales"
+  annotations:
+    contact: "Fred Bloggs"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: AppProject for Team Bar
+  sourceRepos:
+    - https://dev.azure.com/foo-org/Team-Bar/_git/*
+  destinations:
+    - namespace: bar-gitops-dev
+      server: https://foo-gitops-wus3-dev
+      name: foo-gitops-wus3-dev
+    - namespace: bar-gitops-dev
+      server: https://foo-gitops-eus-dev
+      name: foo-gitops-eus-dev
+    - namespace: bar-shared-resources
+      server: https://foo-gitops-wus3-dev
+      name: foo-gitops-wus3-dev
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  orphanedResources:
+    warn: true
