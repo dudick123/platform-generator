@@ -429,6 +429,1248 @@ The CLI generates the following Kubernetes and ArgoCD resources:
 4. **ArgoCD AppProjects** - One per tenant per environment
 5. **ArgoCD ApplicationSets** - With Git Generator for self-service deployments
 
+## ArgoCD ApplicationSets
+
+### What are ApplicationSets?
+
+ArgoCD ApplicationSets are a powerful pattern for generating multiple ArgoCD Applications from a single template. They act as an "application factory" that dynamically creates and manages many Applications based on configuration data. This is particularly useful in multi-tenant, multi-cluster environments where you need to deploy the same application across different clusters or namespaces with slight variations.
+
+Instead of manually creating dozens or hundreds of individual Application manifests, an ApplicationSet reads configuration from a data source (like Git files, cluster lists, or matrices) and generates Applications automatically. This approach provides:
+
+- **Self-service deployments**: Teams can add new applications by simply updating a config file
+- **Consistency**: All generated Applications follow the same template structure
+- **Multi-cluster management**: Deploy to multiple clusters from a single ApplicationSet
+- **Reduced boilerplate**: One ApplicationSet replaces many Application manifests
+- **GitOps-friendly**: Configuration changes trigger automatic Application updates
+
+### Git Generator Pattern
+
+The **Git Generator** is one of several generators available in ApplicationSets. It discovers applications by reading JSON or YAML files from a Git repository. This is the pattern used by this platform generator.
+
+**How It Works**:
+
+1. The ApplicationSet points to a Git repository and file path pattern (e.g., `apps/*/config.json`)
+2. ArgoCD periodically polls the Git repository for changes
+3. For each file matching the pattern, ArgoCD reads the JSON/YAML content
+4. Variables from the file (like `name`, `cluster`, `namespace`) are available as template variables
+5. ArgoCD generates one Application per config file, substituting variables into the template
+6. When config files are added, removed, or modified, Applications are created, deleted, or updated accordingly
+
+**Benefits of Git Generator**:
+
+- Configuration lives in Git alongside application code or manifests
+- Teams can add new applications without modifying the ApplicationSet itself
+- Changes are tracked through Git history and PR reviews
+- Supports glob patterns to discover config files dynamically
+- Enables true self-service: developers control their own deployments
+
+### Template Architecture: Double-Templating
+
+This platform generator uses a unique **double-templating** pattern to create ApplicationSets:
+
+```
+platform.yaml → Jinja2 → ApplicationSet YAML (with Go templates) → ArgoCD → Applications
+```
+
+**The Two Template Layers**:
+
+1. **Jinja2 Layer** (generation time):
+   - Processes `platform.yaml` configuration
+   - Renders ApplicationSet YAML manifest
+   - Substitutes values like repository URLs, namespaces, labels
+   - Uses `{% raw %}...{% endraw %}` blocks to preserve ArgoCD variables
+
+2. **Go Template Layer** (runtime in ArgoCD):
+   - Processes config.json files from Git Generator
+   - Substitutes values like app names, clusters, paths
+   - Uses `{{.variable}}` syntax (ArgoCD's Go templating)
+   - Runs inside ArgoCD when creating Applications
+
+**Why Double-Templating?**
+
+The ApplicationSet YAML itself contains template variables that ArgoCD will process later. We need Jinja2 to generate the ApplicationSet without processing these ArgoCD-specific variables. The `{% raw %}` blocks tell Jinja2: "Don't touch this - it's for ArgoCD to process later."
+
+**Example**:
+
+```jinja2
+# Jinja2 template (applicationset.yaml.j2)
+metadata:
+  name: {{ applicationset_name }}  # Processed by Jinja2 → "my-app-dev"
+  namespace: {{ namespace }}        # Processed by Jinja2 → "argocd"
+
+template:
+  metadata:
+    name: {% raw %}'{{.name}}'{% endraw %}  # Preserved for ArgoCD → '{{.name}}'
+  spec:
+    destination:
+      cluster: {% raw %}'{{.cluster}}'{% endraw %}  # Preserved for ArgoCD → '{{.cluster}}'
+```
+
+After Jinja2 processing, the ApplicationSet contains literal `{{.name}}` and `{{.cluster}}` which ArgoCD will substitute when reading config.json files.
+
+### Generated ApplicationSet Structure
+
+Here's an example of a generated ApplicationSet:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: my-app-dev
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: parent-bootstrap-appset
+    app.kubernetes.io/instance: argocd-applicationset
+    gitops.example.com/bootstrap-role: "parent"
+    gitops.example.com/bootstrap-app: "true"
+  annotations:
+    argocd.argoproj.io/enable-prune: "true"
+spec:
+  # Enable Go templating for ArgoCD to process
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  generators:
+    # Git generator reads config files from repository
+    - git:
+        repoURL: https://github.com/example-org/app-config
+        revision: main
+        files:
+          - path: "apps/*/config.json"
+
+  template:
+    metadata:
+      # ArgoCD substitutes {{.name}} from config.json
+      name: '{{.name}}'
+      labels:
+        app.kubernetes.io/instance: argocd-application
+        gitops.example.com/bootstrap-role: "child"
+
+    spec:
+      # ArgoCD substitutes {{.project}} from config.json
+      project: '{{.project}}'
+
+      source:
+        # ArgoCD substitutes {{.source}}, {{.revision}}, {{.manifestPath}}
+        repoURL: '{{.source}}'
+        targetRevision: '{{.revision}}'
+        path: '{{.manifestPath}}'
+        directory:
+          recurse: false
+
+      destination:
+        # ArgoCD substitutes {{.cluster}} and {{.namespace}}
+        name: '{{.cluster}}'
+        namespace: '{{.namespace}}'
+
+      syncPolicy:
+        automated:
+          selfHeal: true
+          prune: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+```
+
+### Bootstrap Labeling Strategy
+
+The generated ApplicationSets use a **parent/child labeling strategy** to distinguish between the ApplicationSet itself and the Applications it creates:
+
+**Parent Labels** (on ApplicationSet):
+```yaml
+labels:
+  app.kubernetes.io/name: parent-bootstrap-appset
+  app.kubernetes.io/instance: argocd-applicationset
+  app.kubernetes.io/component: parent-applicationset
+  gitops.example.com/bootstrap-role: "parent"
+  gitops.example.com/bootstrap-app: "true"
+```
+
+**Child Labels** (on generated Applications):
+```yaml
+labels:
+  app.kubernetes.io/instance: argocd-application
+  app.kubernetes.io/component: child-application
+  gitops.example.com/bootstrap-role: "child"
+  gitops.example.com/bootstrap-app: "true"
+```
+
+**Purpose**:
+
+- **Traceability**: Easily identify which Applications came from which ApplicationSet
+- **Lifecycle management**: Parent/child relationships help with cascading deletes
+- **Queries**: Label selectors can find all "parent" ApplicationSets or all "child" Applications
+- **Automation**: Tools can discover bootstrap applications via the `bootstrap-app` label
+
+### goTemplate Configuration
+
+The `goTemplate: true` setting is critical for this pattern to work:
+
+```yaml
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+```
+
+**What it does**:
+
+- Enables Go template syntax (` {{.variable}}`) in the ApplicationSet template
+- Without this, ArgoCD uses simple string replacement which has limitations
+- `missingkey=error` causes ArgoCD to fail if a required variable is missing from config.json
+
+**Variable Syntax**:
+
+- **With goTemplate**: `{{.name}}`, `{{.cluster}}`, `{{.project}}` (dot notation)
+- **Without goTemplate**: `{{name}}`, `{{cluster}}`, `{{project}}` (no dot)
+
+This generator uses `goTemplate: true` for better error handling and more expressive templates.
+
+### Data Flow Diagram
+
+```
+┌─────────────────┐
+│ platform.yaml   │  Configuration file
+│  - tenants      │
+│  - applications │
+│  - clusters     │
+└────────┬────────┘
+         │
+         │ platform-gen generate
+         ▼
+┌─────────────────┐
+│ Generator       │  Python code
+│  - Reads config │
+│  - Renders      │
+│    Jinja2       │
+└────────┬────────┘
+         │
+         │ Generates 2 files
+         ├─────────────────┬──────────────────┐
+         ▼                 ▼                  ▼
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ ApplicationSet│   │ config.json  │   │ config.json  │
+│    YAML       │   │   (dev)      │   │  (prod)      │
+│               │   │              │   │              │
+│ Contains Go   │   │ [            │   │ [            │
+│ templates:    │   │   {          │   │   {          │
+│  {{.name}}    │   │     "name":  │   │     "name":  │
+│  {{.cluster}} │   │     "cluster"│   │     "cluster"│
+│               │   │   }          │   │   }          │
+│               │   │ ]            │   │ ]            │
+└───────┬───────┘   └──────┬───────┘   └──────┬───────┘
+        │                  │                  │
+        │ Applied to       │                  │
+        │ ArgoCD           │ Git Generator    │
+        │                  │ reads these      │
+        │                  │                  │
+        ▼                  ▼                  ▼
+┌─────────────────────────────────────────────┐
+│              ArgoCD Controller              │
+│  - Reads ApplicationSet                     │
+│  - Polls config.json files                  │
+│  - Substitutes Go template variables        │
+│  - Creates Applications                     │
+└────────────────┬────────────────────────────┘
+                 │
+                 │ Generates
+                 ▼
+    ┌────────────────────────────┐
+    │   ArgoCD Applications      │
+    │                            │
+    │   app1-cluster1-dev        │
+    │   app1-cluster2-dev        │
+    │   app1-cluster1-prod       │
+    │   app1-cluster2-prod       │
+    │   ...                      │
+    └────────────────────────────┘
+```
+
+### Example: From Config to Application
+
+**Input**: `config.json`
+```json
+{
+  "name": "my-app-cluster1-prod",
+  "source": "https://github.com/example-org/my-app",
+  "revision": "main",
+  "manifestPath": "k8s/prod",
+  "project": "platform-team",
+  "namespace": "my-app-prod",
+  "cluster": "prod-us-east-1"
+}
+```
+
+**ApplicationSet Template** (snippet):
+```yaml
+template:
+  metadata:
+    name: '{{.name}}'
+  spec:
+    project: '{{.project}}'
+    source:
+      repoURL: '{{.source}}'
+      path: '{{.manifestPath}}'
+    destination:
+      name: '{{.cluster}}'
+      namespace: '{{.namespace}}'
+```
+
+**Generated Application**:
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app-cluster1-prod
+spec:
+  project: platform-team
+  source:
+    repoURL: https://github.com/example-org/my-app
+    path: k8s/prod
+  destination:
+    name: prod-us-east-1
+    namespace: my-app-prod
+```
+
+ArgoCD substitutes all `{{.variable}}` placeholders with values from `config.json`, creating a fully-formed Application manifest.
+
+## Jinja2 Templates
+
+This platform generator uses Jinja2 templates to generate all Kubernetes and ArgoCD manifests. Understanding how these templates work is essential for customizing or extending the generator.
+
+### Template Environment Setup
+
+All generators inherit from `BaseGenerator` which configures the Jinja2 environment with these settings:
+
+```python
+Environment(
+    loader=FileSystemLoader(str(template_dir)),
+    trim_blocks=True,
+    lstrip_blocks=True,
+)
+```
+
+**Key settings**:
+- `trim_blocks=True`: Removes the first newline after a template tag (e.g., `{% for %}`, `{% if %}`)
+- `lstrip_blocks=True`: Strips leading whitespace before block tags on their line
+
+These settings help produce clean YAML output without excessive blank lines or indentation issues. However, be careful with the `-` trim control:
+
+- **Avoid**: `{%- if ... %}` - This strips all preceding whitespace and can cause single-line concatenation
+- **Prefer**: `{% if ... %}` - Works correctly with `trim_blocks` for proper YAML formatting
+
+### Variable Substitution
+
+The simplest template pattern is variable substitution using `{{ variable }}` syntax:
+
+**Template**:
+```jinja2
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ namespace_name }}
+```
+
+**Context** (from generator):
+```python
+context = {
+    "namespace_name": "my-app-prod"
+}
+content = template.render(**context)
+```
+
+**Output**:
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: my-app-prod
+```
+
+Variables in the context dictionary become available in templates. Use double curly braces `{{ }}` for variable substitution.
+
+### For Loops - Dictionary Iteration
+
+The most common pattern is iterating over dictionaries to generate labels and annotations. Use `.items()` to get key-value pairs:
+
+**Template Pattern**:
+```jinja2
+metadata:
+  labels:
+{% for key, value in labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+```
+
+**Context**:
+```python
+context = {
+    "labels": {
+        "app": "my-app",
+        "environment": "prod",
+        "team": "platform"
+    }
+}
+```
+
+**Output**:
+```yaml
+metadata:
+  labels:
+    app: "my-app"
+    environment: "prod"
+    team: "platform"
+```
+
+**Key points**:
+- Use `.items()` to iterate over dictionary key-value pairs
+- Indentation must match YAML requirements (consistent spaces)
+- Values are quoted with `"{{ value }}"` for string safety
+- Each iteration produces one label/annotation line
+
+**Example from namespace.yaml.j2**:
+```jinja2
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ namespace_name }}
+  labels:
+{% for key, value in labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{%- if annotations %}
+  annotations:
+{% for key, value in annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{%- endif %}
+```
+
+### For Loops - List Iteration
+
+Lists are iterated with `for item in list` syntax, commonly used for repositories, destinations, and config files:
+
+**Pattern 1 - Simple List**:
+```jinja2
+spec:
+  sourceRepos:
+{% for repo in source_repos %}
+    - {{ repo }}
+{% endfor %}
+```
+
+**Context**:
+```python
+context = {
+    "source_repos": [
+        "https://github.com/example-org/app1",
+        "https://github.com/example-org/app2",
+        "https://github.com/example-org/*"
+    ]
+}
+```
+
+**Output**:
+```yaml
+spec:
+  sourceRepos:
+    - https://github.com/example-org/app1
+    - https://github.com/example-org/app2
+    - https://github.com/example-org/*
+```
+
+**Pattern 2 - List of Objects**:
+```jinja2
+destinations:
+{% for dest in destinations %}
+  - namespace: {{ dest.namespace }}
+    server: {{ dest.server }}
+    name: {{ dest.name }}
+{% endfor %}
+```
+
+**Context**:
+```python
+context = {
+    "destinations": [
+        {"namespace": "app-prod", "server": "https://prod-cluster", "name": "prod-us-east"},
+        {"namespace": "app-prod", "server": "https://prod-cluster-2", "name": "prod-us-west"}
+    ]
+}
+```
+
+**Output**:
+```yaml
+destinations:
+  - namespace: app-prod
+    server: https://prod-cluster
+    name: prod-us-east
+  - namespace: app-prod
+    server: https://prod-cluster-2
+    name: prod-us-west
+```
+
+**Key points**:
+- Access object properties with dot notation: `dest.namespace`, `dest.server`
+- Maintain proper YAML list indentation with `- ` prefix
+- Works with Pydantic models (generators pass model objects directly)
+
+**Example from appproject.yaml.j2**:
+```jinja2
+spec:
+  description: {{ description }}
+  sourceRepos:
+{% for repo in source_repos %}
+    - {{ repo }}
+{% endfor %}
+  destinations:
+{% for dest in destinations %}
+    - namespace: {{ dest.namespace }}
+      server: {{ dest.server }}
+      name: {{ dest.name }}
+{% endfor %}
+```
+
+### Conditional Rendering
+
+Use `{% if condition %}` blocks to conditionally include template sections:
+
+**Pattern**:
+```jinja2
+{%- if annotations %}
+  annotations:
+{% for key, value in annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{%- endif %}
+```
+
+**How it works**:
+- If `annotations` is `None`, empty dict, or `False`, the entire block is skipped
+- If `annotations` exists and has items, the annotations section is rendered
+- The `{%- if %}` with hyphen strips preceding whitespace for cleaner output
+
+**Complex Example** (from networkpolicy/allow-ingress.yaml.j2):
+```jinja2
+spec:
+  endpointSelector: {}
+  ingress:
+{%- if ingress_namespaces %}
+{% for ns in ingress_namespaces %}
+    - fromEndpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: {{ ns }}
+{% endfor %}
+{%- endif %}
+{%- if ingress_labels %}
+{% for label_set in ingress_labels %}
+    - fromEndpoints:
+      - matchLabels:
+{% for key, value in label_set.items() %}
+          {{ key }}: {{ value }}
+{% endfor %}
+{% endfor %}
+{%- endif %}
+```
+
+This pattern:
+1. Checks if `ingress_namespaces` exists
+2. If yes, iterates and creates ingress rules for each namespace
+3. Checks if `ingress_labels` exists
+4. If yes, iterates over label sets and their key-value pairs
+5. Creates nested YAML structure with proper indentation
+
+### Double-Templating Pattern (Advanced)
+
+The **most critical pattern** for ApplicationSets: preserving ArgoCD Go template variables while processing Jinja2 templates.
+
+**Problem**: ApplicationSet YAML contains `{{.name}}`, `{{.cluster}}` which ArgoCD processes. But Jinja2 would try to substitute these variables during generation, causing errors.
+
+**Solution**: Use `{% raw %}...{% endraw %}` blocks to tell Jinja2 to leave the contents untouched.
+
+**Example from applicationset.yaml.j2**:
+```jinja2
+# Jinja2 processes these variables (no {% raw %} block)
+metadata:
+  name: {{ applicationset_name }}
+  namespace: {{ namespace }}
+
+spec:
+  goTemplate: true
+
+  generators:
+    - git:
+        repoURL: {{ config_repo_url }}
+        revision: {{ config_repo_revision }}
+
+  template:
+    metadata:
+      # Jinja2 does NOT process this - preserved for ArgoCD
+      name: {% raw %}'{{.name}}'{% endraw %}
+
+      labels:
+{% for key, value in labels.items() %}
+        {{ key }}: "{{ value }}"
+{% endfor %}
+
+    spec:
+      # Jinja2 does NOT process these - preserved for ArgoCD
+      project: {% raw %}'{{.project}}'{% endraw %}
+
+      source:
+        repoURL: {% raw %}'{{.source}}'{% endraw %}
+        targetRevision: {% raw %}'{{.revision}}'{% endraw %}
+        path: {% raw %}'{{.manifestPath}}'{% endraw %}
+
+      destination:
+        name: {% raw %}'{{.cluster}}'{% endraw %}
+        namespace: {% raw %}'{{.namespace}}'{% endraw %}
+```
+
+**After Jinja2 processing**, the output contains:
+```yaml
+name: '{{.name}}'
+project: '{{.project}}'
+source:
+  repoURL: '{{.source}}'
+  path: '{{.manifestPath}}'
+destination:
+  name: '{{.cluster}}'
+  namespace: '{{.namespace}}'
+```
+
+ArgoCD then processes these `{{.variable}}` placeholders when reading config.json files.
+
+**Key points**:
+- `{% raw %}` starts a literal block (Jinja2 ignores everything inside)
+- `{% endraw %}` ends the literal block
+- Used exclusively for preserving ArgoCD/Go template syntax
+- The generated YAML contains literal `{{.variable}}` text
+- ArgoCD processes these at runtime, not at generation time
+
+### Template Context: How Generators Pass Data
+
+Each generator builds a **context dictionary** and passes it to the template via `template.render(**context)`:
+
+**Example from NamespaceGenerator**:
+```python
+context = {
+    "namespace_name": "my-app-prod",
+    "labels": {
+        "platform.example.com/tenant": "example",
+        "platform.example.com/environment": "prod",
+        "app": "my-app"
+    },
+    "annotations": {
+        "description": "Production namespace for my-app"
+    }
+}
+content = template.render(**context)
+```
+
+**Example from ApplicationSetGenerator**:
+```python
+context = {
+    "applicationset_name": "my-app-dev",
+    "namespace": "argocd",
+    "labels": {
+        "platform.example.com/tenant": "example",
+        "platform.example.com/environment": "dev"
+    },
+    "config_repo_url": "https://github.com/example-org/config",
+    "config_repo_revision": "main",
+    "config_repo_files": [
+        {"path": "apps/*/config.json"}
+    ],
+    "akp_instance_url": "https://argocd.example.com"
+}
+content = template.render(**context)
+```
+
+**Key points**:
+- Context is a simple Python dictionary
+- Dictionary keys become template variables
+- Values can be strings, dicts, lists, or Pydantic models
+- Nested objects use dot notation: `obj.property`
+- Lists use iteration: `for item in list`
+
+### Template Examples by Resource Type
+
+#### Namespace Template
+
+**File**: `src/platform_generator/templates/namespace.yaml.j2`
+
+**Pattern**: Simple variable substitution + label/annotation iteration
+
+```jinja2
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ namespace_name }}
+  labels:
+{% for key, value in labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{%- if annotations %}
+  annotations:
+{% for key, value in annotations.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+{%- endif %}
+```
+
+**Usage**:
+- Variables: `namespace_name`, `labels`, `annotations`
+- Patterns: Dictionary iteration, conditional rendering
+- Complexity: Low
+
+#### ResourceQuota Template
+
+**File**: `src/platform_generator/templates/resourcequota.yaml.j2`
+
+**Pattern**: Simple variables + resource specifications
+
+```jinja2
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ quota_name }}
+  namespace: {{ namespace }}
+  labels:
+{% for key, value in labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+spec:
+  hard:
+    requests.cpu: "{{ cpu }}"
+    requests.memory: "{{ memory }}"
+    limits.cpu: "{{ cpu }}"
+    limits.memory: "{{ memory }}"
+```
+
+**Usage**:
+- Variables: `quota_name`, `namespace`, `labels`, `cpu`, `memory`
+- Patterns: Dictionary iteration, simple substitution
+- Complexity: Low
+
+#### AppProject Template
+
+**File**: `src/platform_generator/templates/argocd/appproject.yaml.j2`
+
+**Pattern**: List iteration for repos and destinations
+
+```jinja2
+# Deploy to AKP instance: {{ akp_instance_url }}
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: {{ project_name }}
+  namespace: {{ namespace }}
+  labels:
+{% for key, value in labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+spec:
+  description: {{ description }}
+  sourceRepos:
+{% for repo in source_repos %}
+    - {{ repo }}
+{% endfor %}
+  destinations:
+{% for dest in destinations %}
+    - namespace: {{ dest.namespace }}
+      server: {{ dest.server }}
+      name: {{ dest.name }}
+{% endfor %}
+```
+
+**Usage**:
+- Variables: `project_name`, `namespace`, `labels`, `source_repos`, `destinations`
+- Patterns: List iteration (simple and object lists), dictionary iteration
+- Complexity: Medium
+
+#### NetworkPolicy Template (Complex)
+
+**File**: `src/platform_generator/templates/networkpolicy/allow-ingress.yaml.j2`
+
+**Pattern**: Nested conditionals and list iteration
+
+```jinja2
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-from-ingress
+  namespace: {{ namespace }}
+  labels:
+{% for key, value in labels.items() %}
+    {{ key }}: "{{ value }}"
+{% endfor %}
+spec:
+  endpointSelector: {}
+  ingress:
+{%- if ingress_namespaces %}
+{% for ns in ingress_namespaces %}
+    - fromEndpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: {{ ns }}
+{% endfor %}
+{%- endif %}
+{%- if ingress_labels %}
+{% for label_set in ingress_labels %}
+    - fromEndpoints:
+      - matchLabels:
+{% for key, value in label_set.items() %}
+          {{ key }}: {{ value }}
+{% endfor %}
+{% endfor %}
+{%- endif %}
+```
+
+**Usage**:
+- Variables: `namespace`, `labels`, `ingress_namespaces`, `ingress_labels`
+- Patterns: Multiple conditionals, nested for loops, list and dictionary iteration
+- Complexity: High
+
+### Best Practices
+
+1. **Maintain proper YAML indentation**:
+   - Use spaces (not tabs)
+   - Be consistent with indentation levels
+   - Test generated YAML with `yamllint` or `platform-gen validate-output`
+
+2. **Use meaningful variable names**:
+   - Good: `namespace_name`, `source_repos`, `destination_namespace`
+   - Bad: `name`, `repos`, `ns`
+
+3. **Quote string values in labels/annotations**:
+   - Use `"{{ value }}"` not `{{ value }}`
+   - Prevents YAML parsing errors with special characters
+
+4. **Use conditionals for optional sections**:
+   - Wrap optional fields in `{%- if variable %}`
+   - Prevents empty or null values in generated YAML
+
+5. **Leverage `{% raw %}` blocks sparingly**:
+   - Only use for preserving other templating syntax (Go templates, Helm, etc.)
+   - Don't use for escaping quotes or special characters
+
+6. **Test templates with real data**:
+   - Use `platform-gen generate --dry-run` to preview output
+   - Validate with `platform-gen validate-output`
+
+## Config.json Files
+
+Config.json files are a critical component of the Git Generator pattern used in ApplicationSets. They describe which applications should be deployed to which clusters, serving as the data source that drives ArgoCD's application creation.
+
+### Purpose
+
+The config.json file serves as a **deployment manifest** that tells ArgoCD:
+- **What** application to deploy (source repository and path)
+- **Where** to deploy it (cluster and namespace)
+- **How** to identify it (name and project)
+
+These files are auto-generated by the platform generator based on your `platform.yaml` configuration, eliminating the need to manually create and maintain deployment specs for each application and cluster combination.
+
+**Key benefits**:
+- **Single source of truth**: `platform.yaml` drives both ApplicationSet and config.json generation
+- **Self-service**: Teams can add new deployments by updating one file
+- **Consistency**: All config.json files follow the same structure
+- **Traceability**: Generated from declarative configuration, not manual editing
+
+### File Structure
+
+Config.json files are JSON arrays containing application deployment objects. Each object represents one application deployment to one cluster.
+
+**Schema**:
+```json
+[
+  {
+    "name": "string",           // Application name (must be unique in ArgoCD)
+    "source": "string",         // Git repository URL for application manifests
+    "revision": "string",       // Git branch/tag/commit (typically "main")
+    "manifestPath": "string",   // Path within repository to Kubernetes manifests
+    "project": "string",        // ArgoCD AppProject name
+    "namespace": "string",      // Target Kubernetes namespace
+    "cluster": "string"         // Target cluster name (not URL)
+  }
+]
+```
+
+**Field Descriptions**:
+
+| Field | Type | Description | Example |
+|-------|------|-------------|---------|
+| `name` | string | Unique name for the generated Application | `"my-app-cluster1-prod"` |
+| `source` | string | Git repository containing application manifests | `"https://github.com/example-org/my-app"` |
+| `revision` | string | Git revision to deploy | `"main"` or `"v1.2.3"` |
+| `manifestPath` | string | Path to manifests within repository | `"k8s/prod"` or `"manifests/base"` |
+| `project` | string | ArgoCD AppProject (for RBAC and policy) | `"platform-team"` |
+| `namespace` | string | Target namespace in Kubernetes cluster | `"my-app-prod"` |
+| `cluster` | string | Target cluster name (matches ArgoCD cluster registration) | `"prod-us-east-1"` |
+
+**Example**:
+```json
+[
+  {
+    "name": "my-app-prod-us-east",
+    "source": "https://github.com/example-org/my-app",
+    "revision": "main",
+    "manifestPath": "k8s/prod",
+    "project": "platform-team",
+    "namespace": "my-app-prod",
+    "cluster": "prod-us-east-1"
+  },
+  {
+    "name": "my-app-prod-us-west",
+    "source": "https://github.com/example-org/my-app",
+    "revision": "main",
+    "manifestPath": "k8s/prod",
+    "project": "platform-team",
+    "namespace": "my-app-prod",
+    "cluster": "prod-us-west-1"
+  }
+]
+```
+
+This config.json would create two ArgoCD Applications, deploying the same app to two different clusters.
+
+### Auto-Generation Process
+
+The platform generator automatically creates config.json files from your `platform.yaml` configuration.
+
+**Input** (platform.yaml):
+```yaml
+tenants:
+  - name: platform-team
+    short-name: platform
+    namespaces:
+      prod: my-app-prod
+
+    applications:
+      - name: my-app
+        argo-app-type: applicationset
+        generator-type: git-generator
+        repo-url: "https://github.com/example-org/my-app"
+        config-repo:
+          url: "https://github.com/example-org/app-config"
+          revision: main
+          files:
+            - path: "apps/*/config.json"
+        environments:
+          prod:
+            - cluster: prod-us-east
+              repo-path: "k8s/prod"
+            - cluster: prod-us-west
+              repo-path: "k8s/prod"
+
+platform-clusters:
+  prod-us-east:
+    name: prod-us-east-1
+    env: prod
+  prod-us-west:
+    name: prod-us-west-1
+    env: prod
+```
+
+**Generation Process**:
+
+1. Generator reads `applications[].environments[env]` (list of cluster deployments)
+2. For each cluster in the list:
+   - Looks up cluster details from `platform-clusters` using the cluster key
+   - Builds a config entry with:
+     - `name`: `{application.name}-{cluster.name}`
+     - `source`: `application.repo_url`
+     - `revision`: `"main"` (hardcoded, can be enhanced)
+     - `manifestPath`: `cluster_config.repo_path`
+     - `project`: `tenant.name`
+     - `namespace`: `tenant.namespaces[env]`
+     - `cluster`: `cluster.name` (full cluster name)
+3. Writes JSON array to file at path: `tenants/{tenant}/config-repo/{app}/{env}/config.json`
+
+**Generated Output** (config.json):
+```json
+[
+  {
+    "name": "my-app-prod-us-east-1",
+    "source": "https://github.com/example-org/my-app",
+    "revision": "main",
+    "manifestPath": "k8s/prod",
+    "project": "platform-team",
+    "namespace": "my-app-prod",
+    "cluster": "prod-us-east-1"
+  },
+  {
+    "name": "my-app-prod-us-west-1",
+    "source": "https://github.com/example-org/my-app",
+    "revision": "main",
+    "manifestPath": "k8s/prod",
+    "project": "platform-team",
+    "namespace": "my-app-prod",
+    "cluster": "prod-us-west-1"
+  }
+]
+```
+
+### Integration with ApplicationSets
+
+The config.json file is read by ArgoCD's Git Generator, which uses the data to create Applications.
+
+**How It Works**:
+
+1. **ApplicationSet Points to Config Repo**:
+   ```yaml
+   spec:
+     generators:
+       - git:
+           repoURL: https://github.com/example-org/app-config
+           revision: main
+           files:
+             - path: "apps/*/config.json"
+   ```
+
+2. **Git Generator Reads Files**:
+   - ArgoCD polls the repository every 3 minutes (default)
+   - Finds all files matching the glob pattern `apps/*/config.json`
+   - Parses each JSON file
+   - Extracts variables from each array element
+
+3. **Variables Become Available in Template**:
+   - JSON fields become Go template variables: `{{.name}}`, `{{.cluster}}`, etc.
+   - ApplicationSet template references these variables
+   - ArgoCD creates one Application per JSON array element
+
+4. **Applications Are Created**:
+   ```yaml
+   # Generated by ArgoCD from config.json entry 1
+   apiVersion: argoproj.io/v1alpha1
+   kind: Application
+   metadata:
+     name: my-app-prod-us-east-1  # from {{.name}}
+   spec:
+     project: platform-team        # from {{.project}}
+     source:
+       repoURL: https://github.com/example-org/my-app  # from {{.source}}
+       path: k8s/prod               # from {{.manifestPath}}
+     destination:
+       name: prod-us-east-1         # from {{.cluster}}
+       namespace: my-app-prod       # from {{.namespace}}
+   ```
+
+### Data Flow Diagram
+
+```
+┌──────────────────────┐
+│   platform.yaml      │
+│                      │
+│ tenants:             │
+│   - applications:    │
+│       environments:  │
+│         prod:        │
+│           - cluster  │
+│             repo-path│
+└──────────┬───────────┘
+           │
+           │ platform-gen generate
+           ▼
+┌──────────────────────┐
+│ ApplicationSet       │
+│   Generator          │
+│                      │
+│ _generate_config_json│
+└──────────┬───────────┘
+           │
+           │ Writes to:
+           │ tenants/{tenant}/
+           │   config-repo/{app}/
+           │     {env}/config.json
+           ▼
+┌──────────────────────┐
+│   config.json        │
+│                      │
+│ [                    │
+│   {                  │
+│     "name": "...",   │
+│     "cluster": "..."│
+│   }                  │
+│ ]                    │
+└──────────┬───────────┘
+           │
+           │ Git push
+           ▼
+┌──────────────────────┐
+│  Git Repository      │
+│  (app-config repo)   │
+│                      │
+│  apps/               │
+│    my-app/           │
+│      config.json     │
+└──────────┬───────────┘
+           │
+           │ ArgoCD polls every 3min
+           ▼
+┌──────────────────────┐
+│ ArgoCD Git Generator │
+│                      │
+│ - Reads config.json  │
+│ - Parses JSON        │
+│ - Extracts variables │
+└──────────┬───────────┘
+           │
+           │ For each array element
+           ▼
+┌──────────────────────┐
+│  ApplicationSet      │
+│    Template          │
+│                      │
+│  name: {{.name}}     │
+│  cluster: {{.cluster}}│
+│  source: {{.source}} │
+└──────────┬───────────┘
+           │
+           │ Substitutes variables
+           ▼
+┌──────────────────────┐
+│   ArgoCD Application │
+│                      │
+│   my-app-prod-east   │
+│   my-app-prod-west   │
+│   ...                │
+└──────────────────────┘
+```
+
+### File Organization
+
+Config.json files are organized by tenant, application, and environment:
+
+```
+tenants/
+  {tenant}/
+    config-repo/
+      {app}/
+        {env}/
+          config.json
+```
+
+**Example Structure**:
+```
+tenants/
+  platform/
+    config-repo/
+      my-app/
+        dev/
+          config.json      # Deployments for dev clusters
+        stage/
+          config.json      # Deployments for stage clusters
+        prod/
+          config.json      # Deployments for prod clusters
+  acme/
+    config-repo/
+      web-app/
+        prod/
+          config.json
+```
+
+This structure:
+- **Isolates tenants**: Each tenant has their own config-repo directory
+- **Groups by application**: All environments for an app are together
+- **Separates environments**: Dev/stage/prod configs don't interfere
+- **Enables glob patterns**: `apps/*/config.json` discovers all applications
+
+### Mapping: platform.yaml → config.json → ApplicationSet
+
+Here's a complete example showing how data flows from configuration to deployment:
+
+**Step 1: platform.yaml (Input)**
+```yaml
+applications:
+  - name: web-app
+    environments:
+      prod:
+        - cluster: prod-us-east   # Key referencing platform-clusters
+          repo-path: "k8s/prod"
+
+platform-clusters:
+  prod-us-east:
+    name: prod-cluster-us-east-1  # Full cluster name
+    env: prod
+```
+
+**Step 2: config.json (Generated)**
+```json
+[
+  {
+    "name": "web-app-prod-cluster-us-east-1",
+    "source": "https://github.com/example-org/web-app",
+    "revision": "main",
+    "manifestPath": "k8s/prod",
+    "project": "platform-team",
+    "namespace": "web-app-prod",
+    "cluster": "prod-cluster-us-east-1"
+  }
+]
+```
+
+**Step 3: ApplicationSet Template (Consumes config.json)**
+```yaml
+spec:
+  generators:
+    - git:
+        files:
+          - path: "apps/*/config.json"
+
+  template:
+    metadata:
+      name: '{{.name}}'              # → web-app-prod-cluster-us-east-1
+    spec:
+      project: '{{.project}}'        # → platform-team
+      source:
+        repoURL: '{{.source}}'       # → https://github.com/example-org/web-app
+        path: '{{.manifestPath}}'    # → k8s/prod
+      destination:
+        name: '{{.cluster}}'         # → prod-cluster-us-east-1
+        namespace: '{{.namespace}}'  # → web-app-prod
+```
+
+**Step 4: Application (Created by ArgoCD)**
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: web-app-prod-cluster-us-east-1
+spec:
+  project: platform-team
+  source:
+    repoURL: https://github.com/example-org/web-app
+    path: k8s/prod
+  destination:
+    name: prod-cluster-us-east-1
+    namespace: web-app-prod
+```
+
+### Best Practices
+
+1. **Don't edit config.json manually**: Always regenerate from `platform.yaml` to maintain consistency
+
+2. **Use meaningful cluster names**: Cluster names in config.json must match ArgoCD cluster registrations exactly
+
+3. **Keep revision consistent**: Use `main` or a specific tag, avoid `HEAD` which can be ambiguous
+
+4. **Validate JSON**: Use `jq` or JSON validators to ensure generated files are valid
+   ```bash
+   jq . tenants/platform/config-repo/my-app/prod/config.json
+   ```
+
+5. **Version control config.json**: Commit generated config.json files to Git for ArgoCD to read
+
+6. **Monitor ApplicationSet sync**: Check ArgoCD UI to ensure Applications are created from config.json
+
+7. **Use descriptive names**: Make application names unique and descriptive (include cluster/env)
+
 ## Git Operations
 
 The platform generator can automatically create git branches, commit changes, and push to remotes after generating manifests.

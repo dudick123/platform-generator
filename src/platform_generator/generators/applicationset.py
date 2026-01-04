@@ -77,34 +77,19 @@ class ApplicationSetGenerator(BaseGenerator):
                     # Get clusters for this environment
                     env_clusters = application.environments[env]
 
-                    # Get sync policy (use first cluster's policy as default)
-                    sync_policy = None
-                    if env_clusters and env_clusters[0].sync_policy:
-                        sync_policy = env_clusters[0].sync_policy
-
                     # Merge labels
                     labels = self.get_auto_labels(tenant, env)
                     if application.common_labels:
                         labels.update(application.common_labels)
 
-                    # Merge annotations
-                    annotations = self.get_auto_annotations(tenant)
-                    if application.common_annotations:
-                        annotations.update(application.common_annotations)
-
                     # Prepare template context
                     context = {
                         "applicationset_name": f"{application.name}-{env}",
                         "namespace": akp_instance.appproject_namespace,
-                        "project_name": tenant.name,
                         "labels": labels,
-                        "annotations": annotations,
                         "config_repo_url": application.config_repo.url,
                         "config_repo_revision": application.config_repo.revision,
                         "config_repo_files": application.config_repo.files,
-                        "app_repo_url": application.repo_url,
-                        "destination_namespace": namespace_name,
-                        "sync_policy": sync_policy,
                         "akp_instance_url": akp_instance.url,
                     }
 
@@ -118,7 +103,7 @@ class ApplicationSetGenerator(BaseGenerator):
                         "env": env,
                     }
 
-                    # Write the file
+                    # Write the ApplicationSet YAML file
                     filename = f"applicationset-{application.name}.yaml"
                     self.writer.write_file(
                         content=content,
@@ -126,7 +111,132 @@ class ApplicationSetGenerator(BaseGenerator):
                         variables=path_vars,
                         filename=filename,
                     )
-
                     count += 1
 
+                    # Generate corresponding config.json file
+                    config_json_count = self._generate_config_json(
+                        tenant=tenant,
+                        application=application,
+                        env=env,
+                    )
+                    count += config_json_count
+
         return count
+
+    def _resolve_config_json_path(
+        self,
+        path_pattern: str,
+        tenant: str,
+        app: str,
+        env: str
+    ) -> str:
+        """
+        Resolve config.json path pattern to actual path.
+
+        Handles wildcard patterns like "apps/*/config.json" by replacing
+        wildcards with actual values from tenant/app/env context.
+
+        Args:
+            path_pattern: Path pattern from config-repo.files (e.g., "apps/*/config.json")
+            tenant: Tenant short name
+            app: Application name
+            env: Environment name
+
+        Returns:
+            Resolved path (e.g., "apps/bar-mfe-frontend/config.json")
+
+        Examples:
+            >>> _resolve_config_json_path("apps/*/config.json", "bar", "bar-mfe-frontend", "dev")
+            "apps/bar-mfe-frontend/config.json"
+
+            >>> _resolve_config_json_path("bom/dev/config.json", "bar", "bar-mfe-frontend", "dev")
+            "bom/dev/config.json"
+        """
+        # Replace common wildcards with actual values
+        resolved = path_pattern
+
+        # Replace * with application name (common pattern)
+        if "/*/" in resolved:
+            resolved = resolved.replace("/*/", f"/{app}/")
+
+        # Replace env placeholder if present
+        if "{{env}}" in resolved:
+            resolved = resolved.replace("{{env}}", env)
+
+        return resolved
+
+    def _generate_config_json(
+        self,
+        tenant: "Tenant",
+        application: Application,
+        env: str,
+    ) -> int:
+        """
+        Generate config.json files for Git Generator.
+
+        Creates JSON configuration files that define which applications
+        should be deployed to which clusters. These files are consumed
+        by ArgoCD's Git Generator.
+
+        Args:
+            tenant: Tenant configuration
+            application: Application configuration
+            env: Environment name
+
+        Returns:
+            Number of config.json files generated
+        """
+        import json
+
+        # Get clusters for this environment from application.environments[env]
+        env_clusters = application.environments.get(env, [])
+        if not env_clusters:
+            return 0
+
+        # Build config.json structure
+        config_entries = []
+        for cluster_config in env_clusters:
+            # Get cluster details from platform_clusters
+            cluster_key = cluster_config.cluster
+            platform_cluster = self.config.platform_clusters.get(cluster_key)
+            if not platform_cluster:
+                # Skip if cluster not found
+                continue
+
+            entry = {
+                "name": f"{application.name}-{platform_cluster.name}",
+                "source": application.repo_url,
+                "revision": "main",  # Could be made configurable
+                "manifestPath": cluster_config.repo_path,
+                "project": tenant.name,
+                "namespace": tenant.namespaces.get(env, f"{tenant.short_name}-gitops-{env}"),
+                "cluster": platform_cluster.name,
+            }
+            config_entries.append(entry)
+
+        # If no valid entries, skip generation
+        if not config_entries:
+            return 0
+
+        # Convert to JSON
+        json_content = json.dumps(config_entries, indent=2)
+
+        # Use default output path for config files
+        config_output_template = "tenants/{{tenant}}/config-repo/{{app}}/{{env}}"
+
+        # Prepare path variables
+        path_vars = {
+            "tenant": tenant.short_name,
+            "app": application.name,
+            "env": env,
+        }
+
+        # Write config.json file
+        self.writer.write_file(
+            content=json_content,
+            path_template=config_output_template,
+            variables=path_vars,
+            filename="config.json",
+        )
+
+        return 1

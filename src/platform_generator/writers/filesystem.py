@@ -146,6 +146,8 @@ class FileWriter:
                 summary["app-projects"] = summary.get("app-projects", 0) + 1
             elif "applicationsets" in parts:
                 summary["application-sets"] = summary.get("application-sets", 0) + 1
+            elif "config-repo" in parts or path.name == "config.json":
+                summary["config-files"] = summary.get("config-files", 0) + 1
 
         return summary
 
@@ -201,6 +203,18 @@ class FileWriter:
             elif "applicationsets" in parts:
                 name = filename.replace("applicationset-", "")
                 return ("applicationset", name)
+
+            # Config files: identify by filename or directory
+            elif "config-repo" in parts or path.name == "config.json":
+                # Extract app name from path
+                try:
+                    if "config-repo" in parts:
+                        repo_idx = parts.index("config-repo")
+                        if len(parts) > repo_idx + 1:
+                            return ("config", parts[repo_idx + 1])
+                except (IndexError, ValueError):
+                    pass
+                return ("config", "config")
 
             # Fallback for unknown types
             return ("resource", filename)

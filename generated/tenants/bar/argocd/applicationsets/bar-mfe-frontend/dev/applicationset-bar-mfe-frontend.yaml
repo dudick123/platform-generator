@@ -1,46 +1,76 @@
 # Deploy to AKP instance: https://dev.akp.foo-org.com
+# ArgoCD ApplicationSet Template
+# Dynamically generates ArgoCD Applications from a Git-based configuration file
+# Uses the Git generator pattern to read app specifications and create multiple Applications
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
   name: bar-mfe-frontend-dev
   namespace: argocd
   labels:
+    app.kubernetes.io/name: parent-bootstrap-appset
+    app.kubernetes.io/instance: argocd-applicationset
+    app.kubernetes.io/component: parent-applicationset
+    gitops.foo.io/bootstrap-role: "parent"
+    gitops.foo.io/bootstrap-app: "true"
     platform.foo-org.com/tenant: "bar"
     platform.foo-org.com/environment: "dev"
     platform.foo-org.com/managed-by: "platform-generator"
     team: "bar"
     business-unit: "sales"
   annotations:
-    contact: "Fred Bloggs"
-    cost-center: "001"
+    argocd.argoproj.io/enable-prune: "true"
 spec:
+  # Enable Go templating for advanced template logic
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
   generators:
+    # Git generator pulls configuration from a Git repository
     - git:
         repoURL: https://dev.azure.com/foo-org/Team-Bar/_git/bar-gitops-config
         revision: HEAD
         files:
+          # Path to JSON configuration file containing application definitions
           - path: apps/*/config.json
+
   template:
     metadata:
-      name: '{{ cluster }}-{{ app }}'
+      name: '{{.name}}'
       labels:
+        app.kubernetes.io/instance: argocd-application
+        app.kubernetes.io/component: child-application
+        gitops.foo.io/bootstrap-role: "child"
+        gitops.foo.io/bootstrap-app: "true"
         platform.foo-org.com/tenant: "bar"
         platform.foo-org.com/environment: "dev"
         platform.foo-org.com/managed-by: "platform-generator"
         team: "bar"
         business-unit: "sales"
     spec:
-      project: tenant-bar
+      project: '{{.project}}'
+
       source:
-        repoURL: https://dev.azure.com/foo-org/Team-Bar/_git/bar-mfe-frontend
-        targetRevision: HEAD
-        path: '{{ path }}'
+        repoURL: '{{.source}}'
+        targetRevision: '{{.revision}}'
+        path: '{{.manifestPath}}'
+        directory:
+          recurse: false
+
       destination:
-        server: '{{ server }}'
-        namespace: bar-gitops-dev
+        name: '{{.cluster}}'
+        namespace: '{{.namespace}}'
+
       syncPolicy:
         automated:
-          prune: true
           selfHeal: true
+          prune: true
         syncOptions:
-          - CreateNamespace=false
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m

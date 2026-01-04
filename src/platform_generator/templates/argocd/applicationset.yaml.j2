@@ -1,52 +1,81 @@
 # Deploy to AKP instance: {{ akp_instance_url }}
+# ArgoCD ApplicationSet Template
+# Dynamically generates ArgoCD Applications from a Git-based configuration file
+# Uses the Git generator pattern to read app specifications and create multiple Applications
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
   name: {{ applicationset_name }}
   namespace: {{ namespace }}
   labels:
+    app.kubernetes.io/name: parent-bootstrap-appset
+    app.kubernetes.io/instance: argocd-applicationset
+    app.kubernetes.io/component: parent-applicationset
+    gitops.foo.io/bootstrap-role: "parent"
+    gitops.foo.io/bootstrap-app: "true"
 {% for key, value in labels.items() %}
     {{ key }}: "{{ value }}"
 {% endfor %}
-{%- if annotations %}
   annotations:
-{% for key, value in annotations.items() %}
-    {{ key }}: "{{ value }}"
-{% endfor %}
-{%- endif %}
+    argocd.argoproj.io/enable-prune: "true"
 spec:
+  # Enable Go templating for advanced template logic
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
   generators:
+    # Git generator pulls configuration from a Git repository
     - git:
         repoURL: {{ config_repo_url }}
         revision: {{ config_repo_revision }}
         files:
+          # Path to JSON configuration file containing application definitions
 {% for file_spec in config_repo_files %}
           - path: {{ file_spec.path }}
 {% endfor %}
+
   template:
     metadata:
-      name: {% raw %}'{{ cluster }}-{{ app }}'{% endraw %}
+      name: {% raw %}'{{.name}}'{% endraw %}
 
       labels:
+        app.kubernetes.io/instance: argocd-application
+        app.kubernetes.io/component: child-application
+        gitops.foo.io/bootstrap-role: "child"
+        gitops.foo.io/bootstrap-app: "true"
 {% for key, value in labels.items() %}
         {{ key }}: "{{ value }}"
 {% endfor %}
     spec:
-      project: {{ project_name }}
+      project: {% raw %}'{{.project}}'{% endraw %}
+
+
       source:
-        repoURL: {{ app_repo_url }}
-        targetRevision: HEAD
-        path: {% raw %}'{{ path }}'{% endraw %}
+        repoURL: {% raw %}'{{.source}}'{% endraw %}
+
+        targetRevision: {% raw %}'{{.revision}}'{% endraw %}
+
+        path: {% raw %}'{{.manifestPath}}'{% endraw %}
+
+        directory:
+          recurse: false
 
       destination:
-        server: {% raw %}'{{ server }}'{% endraw %}
+        name: {% raw %}'{{.cluster}}'{% endraw %}
 
-        namespace: {{ destination_namespace }}
-{% if sync_policy %}
+        namespace: {% raw %}'{{.namespace}}'{% endraw %}
+
+
       syncPolicy:
         automated:
-          prune: {{ sync_policy.automated.prune | lower }}
-          selfHeal: {{ sync_policy.automated.selfHeal | lower }}
+          selfHeal: true
+          prune: true
         syncOptions:
-          - CreateNamespace=false
-{%- endif %}
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
