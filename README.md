@@ -11,7 +11,9 @@ A Python CLI tool for generating Kubernetes and ArgoCD manifests from declarativ
 - **Network Policies**: Create Cilium NetworkPolicies with 4 policy types (deny-all, allow-namespace, allow-ingress, custom CIDR)
 - **ArgoCD Integration**: Generate AppProjects and ApplicationSets with Git Generator
 - **Configurable Output Paths**: Customize where each resource type is written
-- **Post-deployment Validation**: Verify resources are correctly deployed to clusters
+- **YAML Validation**: Validate generated YAML files for syntax errors before deployment
+- **Git Operations**: Automatic branch creation, commits, and pushes for GitOps workflows
+- **Post-deployment Validation**: Verify resources are correctly deployed to clusters (planned)
 - **Rich CLI Output**: Beautiful terminal output with colors and tables
 
 ## Installation
@@ -51,12 +53,37 @@ platform-gen validate --config platform.yaml
 platform-gen generate --config platform.yaml
 ```
 
-4. (Optional) Validate deployment:
+4. Validate generated YAML files:
 ```bash
-platform-gen validate-deployment --tenant my-tenant --environment dev --kubeconfig ~/.kube/config
+platform-gen validate-output --path generated/
+```
+
+5. (Optional) Review and commit changes:
+```bash
+cd generated/
+git status
+git add .
+git commit -m "Update platform manifests"
+git push
+```
+
+Or enable automatic git operations in `platform.yaml`:
+```yaml
+cli-config:
+  git-enabled: true
+  git-auto-push: true
 ```
 
 ## CLI Commands
+
+### Command Reference
+
+| Command | Purpose | Status |
+|---------|---------|--------|
+| `validate` | Validate platform.yaml configuration | ✅ Available |
+| `generate` | Generate Kubernetes/ArgoCD manifests | ✅ Available |
+| `validate-output` | Validate generated YAML syntax | ✅ Available |
+| `validate-deployment` | Validate deployed resources | ⚠️ Planned |
 
 ### `platform-gen validate`
 
@@ -106,7 +133,73 @@ platform-gen generate --dry-run
 platform-gen generate --tenant bar --environment dev --dry-run
 ```
 
+### `platform-gen validate-output`
+
+Validate generated YAML files for correct syntax.
+
+```bash
+platform-gen validate-output --path PATH
+```
+
+**Options:**
+- `--path, -p PATH`: Path to YAML file or directory to validate (required)
+
+**Description:**
+
+This command validates that generated YAML files can be parsed correctly. It's useful for:
+- Catching template rendering errors before deployment
+- Validating syntax after making template changes
+- CI/CD integration to ensure manifests are well-formed
+- Debugging YAML parsing issues
+
+The command accepts either a single file or a directory. When given a directory, it recursively finds all `.yaml` and `.yml` files and validates each one.
+
+**Examples:**
+
+```bash
+# Validate a single file
+platform-gen validate-output --path generated/tenants/bar/namespaces/dev/namespace.yaml
+
+# Validate all files in a directory
+platform-gen validate-output --path generated/tenants/bar/networkpolicies/dev/
+
+# Validate all generated files
+platform-gen validate-output --path generated/
+
+# Short form
+platform-gen validate-output -p generated/
+```
+
+**Output Example:**
+
+```
+Validating YAML files: generated/tenants/bar/networkpolicies/dev
+
+Found 5 YAML file(s) to validate
+
+✓ allow-same-namespace.yaml
+✓ deny-all.yaml
+✗ allow-from-ingress.yaml
+  sequence entries are not allowed here
+
+Validation Summary:
+  ✓ 2 file(s) valid
+  ✗ 1 file(s) invalid
+
+Validation Errors:
+
+generated/tenants/bar/networkpolicies/dev/allow-from-ingress.yaml
+  sequence entries are not allowed here
+  in "allow-from-ingress.yaml", line 16, column 15
+```
+
+**Exit Codes:**
+- `0`: All files valid
+- `1`: One or more files invalid or error occurred
+
 ### `platform-gen validate-deployment`
+
+⚠️ **Note: This command is not yet implemented.**
 
 Validate that resources were correctly deployed to Kubernetes clusters.
 
@@ -121,14 +214,17 @@ platform-gen validate-deployment --tenant TENANT --environment ENV [OPTIONS]
 - `--kubeconfig PATH`: Path to kubeconfig file
 - `--context TEXT`: Kubernetes context to use
 
-**What it validates:**
-- ✅ Namespaces exist in all expected clusters
-- ✅ ResourceQuotas are applied with correct limits
-- ✅ Cilium NetworkPolicies exist (all 4 types)
-- ✅ ArgoCD AppProject exists in control plane
-- ✅ ArgoCD ApplicationSets exist with correct configuration
+**Planned Features:**
+
+When implemented, this command will validate:
+- Namespaces exist in all expected clusters
+- ResourceQuotas are applied with correct limits
+- Cilium NetworkPolicies exist (all 4 types)
+- ArgoCD AppProject exists in control plane
+- ArgoCD ApplicationSets exist with correct configuration
 
 **Example:**
+
 ```bash
 platform-gen validate-deployment \
   --tenant bar \
@@ -201,6 +297,10 @@ cli-config:
   validate-before-apply: true
   dry-run-default: true
   git-commit-message-template: "chore: update {{tenant}}/{{app}}"
+  # Git operations (optional)
+  git-enabled: false  # Set to true to enable automatic git operations
+  git-branch-pattern: "feat/platform-{{tenant}}-{{env}}-{{timestamp}}"
+  git-auto-push: true
   output-paths:
     namespaces: "tenants/{{tenant}}/namespaces/{{env}}/{{cluster}}"
     resource-quotas: "tenants/{{tenant}}/resourcequotas/{{env}}"
@@ -329,6 +429,65 @@ The CLI generates the following Kubernetes and ArgoCD resources:
 4. **ArgoCD AppProjects** - One per tenant per environment
 5. **ArgoCD ApplicationSets** - With Git Generator for self-service deployments
 
+## Git Operations
+
+The platform generator can automatically create git branches, commit changes, and push to remotes after generating manifests.
+
+### Enabling Git Operations
+
+Add to your `platform.yaml`:
+
+```yaml
+cli-config:
+  git-enabled: true
+  git-branch-pattern: "feat/platform-{{tenant}}-{{env}}-{{timestamp}}"
+  git-auto-push: true
+  git-commit-message-template: "chore: update {{tenant}}/{{env}}"
+```
+
+### How It Works
+
+1. **Detects Git Repositories**: Walks up from generated files looking for `.git` directories
+2. **Groups Files**: Organizes files by repository (assumes each resource type dir is a separate repo)
+3. **Creates Branches**: Uses template pattern with variables like `{{tenant}}`, `{{env}}`, `{{timestamp}}`
+4. **Commits Changes**: Stages all changes with `git add .` and commits
+5. **Pushes** (optional): Pushes branch to remote if `git-auto-push: true`
+
+### Branch Naming Variables
+
+- `{{tenant}}`: Tenant short-name (extracted from path)
+- `{{env}}`: Environment name (extracted from path)
+- `{{timestamp}}`: Current datetime in `YYYYMMDD-HHMMSS` format
+
+Example: `feat/platform-bar-dev-20260104-143022`
+
+### Output Example
+
+```
+Processing Git Operations...
+
+Processing repository: tenants/bar/namespaces
+✓ Successfully committed 6 file(s) to branch feat/platform-bar-dev-20260104-143022
+  Commit: a1b2c3d
+
+Git Summary:
+  1/1 repositories processed successfully
+```
+
+### Error Handling
+
+- Git failures are non-fatal (show warnings, continue generation)
+- Push failures are treated as warnings
+- Each repository is processed independently
+- Files are always generated successfully regardless of git status
+
+### Requirements
+
+- Git must be installed and in PATH
+- Output directories must already be git repositories with `.git/`
+- Git credentials configured system-wide
+- Remotes configured (if using `git-auto-push`)
+
 ## Development
 
 ### Setup Development Environment
@@ -343,6 +502,38 @@ pip install -e '.[dev]'
 
 # Or with UV
 uv pip install -e '.[dev]'
+```
+
+### Installing Dependencies
+
+#### Runtime Dependencies Only
+```bash
+# Install only what's needed to run the CLI
+pip install -e .
+
+# Or with UV (recommended)
+uv pip install -e .
+```
+
+#### With Development Dependencies
+```bash
+# Install runtime + development tools (pytest, black, ruff, mypy)
+pip install -e '.[dev]'
+
+# Or with UV
+uv pip install -e '.[dev]'
+```
+
+#### Individual Development Tools
+```bash
+# Install just testing tools
+pip install pytest pytest-cov
+
+# Install just code quality tools
+pip install black ruff mypy
+
+# Or install everything from pyproject.toml
+pip install typer[all] pydantic ruamel.yaml jinja2 rich kubernetes pytest pytest-cov black ruff mypy
 ```
 
 ### Run Tests
@@ -403,13 +594,139 @@ platform-generator/
 
 ### Technology Stack
 
-- **Python 3.11+**: Modern Python with type hints
-- **Typer**: Elegant CLI framework
-- **Pydantic**: Data validation and settings management
-- **Jinja2**: Template engine for YAML generation
-- **ruamel.yaml**: YAML parser preserving comments and formatting
-- **Rich**: Beautiful terminal output
-- **kubernetes**: Python client for Kubernetes API
+#### Core Dependencies
+
+**[Typer](https://typer.tiangolo.com/) - CLI Framework**
+- **Version**: >= 0.12.0
+- **Purpose**: Modern CLI framework built on Click with automatic help generation and comprehensive type hints support
+- **Usage in Project**:
+  - Primary CLI application framework in `src/platform_generator/cli.py`
+  - Command definitions: `validate`, `generate`, `validate-output`, `validate-deployment`
+  - Option parsing and validation with rich help text
+  - Integration with Rich for beautiful terminal output
+- **Links**:
+  - [Documentation](https://typer.tiangolo.com/)
+  - [Repository](https://github.com/tiangolo/typer)
+  - [PyPI](https://pypi.org/project/typer/)
+
+**[Pydantic](https://docs.pydantic.dev/) - Data Validation**
+- **Version**: >= 2.5.0
+- **Purpose**: Data validation library using Python type annotations for robust schema validation
+- **Usage in Project**:
+  - Complete schema validation for `platform.yaml` configuration in `src/platform_generator/config/models.py`
+  - All configuration models: `PlatformConfig`, `Tenant`, `CLIConfig`, `AKPInstance`, `PlatformCluster`, etc.
+  - Automatic kebab-case to snake_case field conversion via `Field(alias=...)`
+  - Custom validators for complex configuration logic
+- **Links**:
+  - [Documentation](https://docs.pydantic.dev/)
+  - [Repository](https://github.com/pydantic/pydantic)
+  - [PyPI](https://pypi.org/project/pydantic/)
+
+**[ruamel.yaml](https://yaml.readthedocs.io/) - YAML Parser**
+- **Version**: >= 0.18.0
+- **Purpose**: YAML 1.2 parser and emitter that preserves comments, formatting, and structure during round-trip operations
+- **Usage in Project**:
+  - Configuration file parsing in `src/platform_generator/config/parser.py`
+  - Loads `platform.yaml` files while preserving original formatting and comments
+  - More advanced than PyYAML with better round-trip support
+- **Links**:
+  - [Documentation](https://yaml.readthedocs.io/)
+  - [Repository](https://sourceforge.net/projects/ruamel-yaml/)
+  - [PyPI](https://pypi.org/project/ruamel.yaml/)
+
+**[Jinja2](https://jinja.palletsprojects.com/) - Template Engine**
+- **Version**: >= 3.1.0
+- **Purpose**: Modern and designer-friendly templating language for Python, used for generating dynamic YAML manifests
+- **Usage in Project**:
+  - Template rendering in `src/platform_generator/generators/base.py` and all generator classes
+  - Generates Kubernetes and ArgoCD manifests from templates in `src/platform_generator/templates/`
+  - Template files: `namespace.yaml.j2`, `resourcequota.yaml.j2`, `networkpolicy.yaml.j2`, `appproject.yaml.j2`, `applicationset.yaml.j2`
+  - Special feature: Supports double-templating via `{% raw %}...{% endraw %}` blocks to preserve ArgoCD template variables
+- **Links**:
+  - [Documentation](https://jinja.palletsprojects.com/)
+  - [Repository](https://github.com/pallets/jinja)
+  - [PyPI](https://pypi.org/project/Jinja2/)
+
+**[Rich](https://rich.readthedocs.io/) - Terminal Formatting**
+- **Version**: >= 13.7.0
+- **Purpose**: Python library for rich text and beautiful formatting in the terminal with colors, tables, and progress indicators
+- **Usage in Project**:
+  - CLI output formatting throughout `src/platform_generator/cli.py`
+  - File operation logging in `src/platform_generator/writers/filesystem.py`
+  - Git operation status in `src/platform_generator/git/operations.py`
+  - Provides colored output (green ✓, red ✗, yellow ⚠, cyan, blue, magenta, dim text)
+  - Creates formatted tables for configuration summaries and resource listings
+- **Links**:
+  - [Documentation](https://rich.readthedocs.io/)
+  - [Repository](https://github.com/Textualize/rich)
+  - [PyPI](https://pypi.org/project/rich/)
+
+**[Kubernetes Python Client](https://github.com/kubernetes-client/python) - K8s API**
+- **Version**: >= 28.1.0
+- **Purpose**: Official Python client library for Kubernetes, providing access to the Kubernetes API
+- **Usage in Project**:
+  - Currently imported for planned `validate-deployment` command functionality
+  - **Status**: Command skeleton exists but validation features not yet implemented
+  - **Future Use**: Will validate that generated resources (namespaces, quotas, policies, ArgoCD resources) exist correctly in live Kubernetes clusters
+- **Links**:
+  - [Documentation](https://github.com/kubernetes-client/python)
+  - [Repository](https://github.com/kubernetes-client/python)
+  - [PyPI](https://pypi.org/project/kubernetes/)
+
+### Development Dependencies
+
+The project includes comprehensive development tooling for code quality, testing, and type safety:
+
+**[pytest](https://docs.pytest.org/) - Testing Framework**
+- **Version**: >= 7.4.0
+- **Purpose**: Full-featured, mature testing framework for Python with simple syntax and powerful features
+- **Usage in Project**:
+  - Unit tests in `tests/` directory
+  - Tests for FileWriter, resource extraction, path helpers, and summary generation
+  - Run with: `pytest` or `PYTHONPATH=src:$PYTHONPATH pytest tests/ -v`
+- **Links**:
+  - [Documentation](https://docs.pytest.org/)
+  - [Repository](https://github.com/pytest-dev/pytest)
+  - [PyPI](https://pypi.org/project/pytest/)
+
+**[pytest-cov](https://pytest-cov.readthedocs.io/) - Coverage Plugin**
+- **Version**: >= 4.1.0
+- **Purpose**: Coverage plugin for pytest that generates test coverage reports
+- **Usage**: `pytest --cov=src --cov-report=html` to measure test coverage and generate HTML reports
+- **Links**:
+  - [Documentation](https://pytest-cov.readthedocs.io/)
+  - [Repository](https://github.com/pytest-dev/pytest-cov)
+  - [PyPI](https://pypi.org/project/pytest-cov/)
+
+**[Black](https://black.readthedocs.io/) - Code Formatter**
+- **Version**: >= 23.12.0
+- **Purpose**: Uncompromising Python code formatter that enforces consistent style
+- **Configuration**: Line length 100, target versions py311/py312 (from `pyproject.toml`)
+- **Usage**: `black src/ tests/` to format all Python code
+- **Links**:
+  - [Documentation](https://black.readthedocs.io/)
+  - [Repository](https://github.com/psf/black)
+  - [PyPI](https://pypi.org/project/black/)
+
+**[Ruff](https://docs.astral.sh/ruff/) - Fast Linter**
+- **Version**: >= 0.1.9
+- **Purpose**: Extremely fast Python linter written in Rust, replacing Flake8, isort, and more
+- **Configuration**: Line length 100, target version py311 (from `pyproject.toml`)
+- **Usage**: `ruff check src/ tests/` to lint codebase for style and quality issues
+- **Links**:
+  - [Documentation](https://docs.astral.sh/ruff/)
+  - [Repository](https://github.com/astral-sh/ruff)
+  - [PyPI](https://pypi.org/project/ruff/)
+
+**[mypy](https://mypy-lang.org/) - Static Type Checker**
+- **Version**: >= 1.8.0
+- **Purpose**: Static type checker for Python that validates type hints and catches type errors
+- **Configuration**: Strict mode enabled, Python version 3.11, warn on return_any (from `pyproject.toml`)
+- **Usage**: `mypy src/` to perform static type checking on source code
+- **Links**:
+  - [Documentation](https://mypy-lang.org/)
+  - [Repository](https://github.com/python/mypy)
+  - [PyPI](https://pypi.org/project/mypy/)
 
 ## Contributing
 

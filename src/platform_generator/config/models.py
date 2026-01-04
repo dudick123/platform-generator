@@ -35,6 +35,12 @@ class CLIConfig(BaseModel):
     git_commit_message_template: str = Field(
         "chore: update {{tenant}}/{{app}}", alias="git-commit-message-template"
     )
+    git_enabled: bool = Field(False, alias="git-enabled")
+    git_branch_pattern: str = Field(
+        "feat/platform-{{tenant}}-{{env}}-{{timestamp}}",
+        alias="git-branch-pattern",
+    )
+    git_auto_push: bool = Field(True, alias="git-auto-push")
     output_paths: Optional[OutputPaths] = Field(None, alias="output-paths")
 
     class Config:

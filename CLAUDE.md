@@ -104,6 +104,125 @@ self.writer.write_file(
 )
 ```
 
+### FileWriter Summary and kubectl-style Output
+
+The `FileWriter` class provides detailed resource tracking and kubectl-style summary output:
+
+**Quiet Mode**: Initialize with `quiet=True` to suppress individual file write messages during generation:
+
+```python
+writer = FileWriter(output_directory="./generated", dry_run=False, quiet=True)
+# No "✓ Wrote {path}" messages will be printed
+```
+
+**Resource Extraction**: The `_extract_resource_info()` method extracts resource type and name from file paths:
+
+```python
+# Example: "tenants/bar/namespaces/dev/foo-wus3-dev/namespace.yaml"
+# Returns: ("namespace", "foo-wus3-dev")
+```
+
+**Detailed Summary**: The `get_detailed_summary()` method returns structured resource information:
+
+```python
+summary = writer.get_detailed_summary()
+# Returns: List[ResourceCreationInfo] with fields:
+#   - resource_type: str (e.g., "namespace", "resourcequota")
+#   - resource_name: str (extracted from path)
+#   - file_path: Path (full path)
+#   - relative_path: Path (relative to output_directory)
+```
+
+**CLI Integration**: The CLI uses quiet mode and detailed summary to provide kubectl-style output:
+
+```bash
+$ platform-gen generate --config platform.yaml --tenant bar
+
+Resources Generated:
+
+namespace/foo-gitops-wus3-dev created
+resourcequota/bar-dev created
+networkpolicy/deny-all created
+appproject/bar created
+applicationset/bar-mfe-frontend created
+
+Summary:
+  6 namespaces
+  3 resource-quotas
+  12 network-policies
+  3 app-projects
+  3 application-sets
+```
+
+Use `--verbose` flag to show full file paths:
+
+```bash
+$ platform-gen generate --config platform.yaml --tenant bar --verbose
+
+namespace/foo-gitops-wus3-dev created -> tenants/bar/namespaces/dev/foo-gitops-wus3-dev/namespace.yaml
+```
+
+**Dry-run Tracking**: Files are tracked in `files_written` even in dry-run mode, enabling summary generation without actually writing files.
+
+### Git Operations
+
+When `git-enabled: true` in platform.yaml, the generator automatically performs git operations after file generation:
+
+**Workflow:**
+1. Detects git repositories in output directories (walks up tree looking for `.git`)
+2. Groups generated files by repository
+3. For each repository:
+   - Creates or checks out branch using `git-branch-pattern` template
+   - Stages all changes with `git add .`
+   - Commits with `git-commit-message-template`
+   - Pushes to remote (if `git-auto-push: true`)
+
+**Configuration:**
+```yaml
+cli-config:
+  git-enabled: true
+  git-branch-pattern: "feat/platform-{{tenant}}-{{env}}-{{timestamp}}"
+  git-auto-push: true
+  git-commit-message-template: "chore: update {{tenant}}/{{env}}"
+```
+
+**Branch Pattern Variables:**
+- `{{tenant}}`: Tenant short-name extracted from path (`tenants/bar/...` → `"bar"`)
+- `{{env}}`: Environment name extracted from path (after resource type)
+- `{{timestamp}}`: Current datetime in `YYYYMMDD-HHMMSS` format
+
+**Error Handling:**
+- Git failures are non-fatal - warnings shown, generation continues
+- Each repository is processed independently
+- Push failures don't block commit success
+- If no git repositories found, operations are skipped with info message
+
+**Repository Detection:**
+- Assumes each resource type directory is a git repository
+- Example: `tenants/bar/namespaces/` has `.git/` directory
+- Example: `tenants/bar/networkpolicies/` has `.git/` directory
+
+**Output Example:**
+```
+Processing Git Operations...
+
+Processing repository: tenants/bar/namespaces
+✓ Successfully committed 6 file(s) to branch feat/platform-bar-dev-20260104-143022
+  Commit: a1b2c3d
+⚠ Push failed: no remote configured. You may need to push manually
+
+Git Summary:
+  1/1 repositories processed successfully
+```
+
+**Dry-Run Behavior:**
+Git operations are skipped in dry-run mode. Commands that would be executed are shown with `Would run: git ...`.
+
+**Assumptions:**
+- Output path directories are already initialized as git repositories
+- Git credentials are configured system-wide
+- Remotes are configured (if using `git-auto-push`)
+
 ### PlatformConfig Helper Methods
 
 The `PlatformConfig` Pydantic model (config/models.py) includes critical helper methods:

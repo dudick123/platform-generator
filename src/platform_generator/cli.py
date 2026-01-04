@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -14,6 +15,7 @@ from .generators.appproject import AppProjectGenerator
 from .generators.namespace import NamespaceGenerator
 from .generators.networkpolicy import NetworkPolicyGenerator
 from .generators.resourcequota import ResourceQuotaGenerator
+from .git.operations import process_git_operations
 from .writers.filesystem import FileWriter
 
 app = typer.Typer(
@@ -158,14 +160,18 @@ def generate(
         console.print(f"[cyan]Filter:[/cyan] Resource Type = {resource_type}")
 
     if dry_run:
-        console.print("[yellow]⚠ Dry-run mode enabled - no files will be written[/yellow]")
+        console.print(
+            "[yellow]⚠ Dry-run mode enabled - no files or git operations will be executed[/yellow]"
+        )
 
     # Get template directory
     template_dir = Path(__file__).parent / "templates"
 
     # Initialize file writer
     output_dir = platform_config.cli_config.output_directory
-    writer = FileWriter(output_directory=output_dir, dry_run=dry_run)
+    writer = FileWriter(
+        output_directory=output_dir, dry_run=dry_run, quiet=not verbose
+    )
 
     # Track total resources generated
     total_generated = 0
@@ -225,22 +231,64 @@ def generate(
         console.print(f"[green]✓[/green] Generated {count} application set(s)")
         total_generated += count
 
-    # Show summary
-    console.print(f"\n[bold green]✓ Generation complete![/bold green]")
-    console.print(f"Total resources generated: {total_generated}")
+    # Git operations (if enabled)
+    if platform_config.cli_config.git_enabled and not dry_run:
+        console.print("\n[bold]Processing Git Operations...[/bold]")
+        git_results = process_git_operations(
+            files=writer.files_written,
+            output_directory=Path(output_dir),
+            config=platform_config.cli_config,
+            dry_run=dry_run,
+        )
 
-    if not dry_run:
+        if git_results:
+            console.print(f"\n[bold]Git Summary:[/bold]")
+            success_count = sum(1 for r in git_results if r.success)
+            console.print(
+                f"  {success_count}/{len(git_results)} repositories processed successfully"
+            )
+
+    # Show kubectl-style summary
+    console.print(f"\n[bold]Resources Generated:[/bold]\n")
+
+    detailed_summary = writer.get_detailed_summary()
+
+    if detailed_summary:
+        # Color map for resource types
+        resource_colors = {
+            "namespace": "cyan",
+            "resourcequota": "blue",
+            "networkpolicy": "magenta",
+            "appproject": "yellow",
+            "applicationset": "green",
+        }
+
+        # Print kubectl-style: "resourcetype/name created" or "would be created"
+        action = "would be created" if dry_run else "created"
+        for resource_info in detailed_summary:
+            color = resource_colors.get(resource_info.resource_type, "white")
+
+            if verbose:
+                # Show full relative path in verbose mode
+                console.print(
+                    f"[{color}]{resource_info.resource_type}/{resource_info.resource_name}[/{color}] "
+                    f"{action} -> {resource_info.relative_path}"
+                )
+            else:
+                # Compact kubectl style
+                console.print(
+                    f"[{color}]{resource_info.resource_type}/{resource_info.resource_name}[/{color}] {action}"
+                )
+
+        # Summary statistics
         summary = writer.get_output_summary()
-        if summary:
-            table = Table(title="Generated Resources")
-            table.add_column("Resource Type", style="cyan")
-            table.add_column("Count", style="magenta")
+        console.print(f"\n[bold green]Summary:[/bold green]")
+        for resource_type, count in summary.items():
+            console.print(f"  {count} {resource_type}")
 
-            for resource_type, count in summary.items():
-                table.add_row(resource_type, str(count))
-
-            console.print(table)
-            console.print(f"\n[dim]Output directory: {output_dir}[/dim]")
+        console.print(f"\n[dim]Output directory: {output_dir}[/dim]")
+    else:
+        console.print("[yellow]No resources generated[/yellow]")
 
     raise typer.Exit(0)
 
@@ -317,6 +365,89 @@ def validate_deployment(
     console.print("  • ArgoCD AppProject exists")
     console.print("  • ArgoCD ApplicationSets exist")
 
+    raise typer.Exit(0)
+
+
+@app.command()
+def validate_output(
+    path: Path = typer.Option(
+        ...,
+        "--path",
+        "-p",
+        help="Path to YAML file or directory to validate",
+        exists=True,
+    ),
+) -> None:
+    """
+    Validate generated YAML files for correct syntax.
+
+    Checks that YAML files can be parsed without errors. Accepts either
+    a single file or a directory (will validate all .yaml/.yml files).
+    """
+    console.print(f"[bold blue]Validating YAML files:[/bold blue] {path}\n")
+
+    # Collect files to validate
+    files_to_validate = []
+    if path.is_file():
+        if path.suffix.lower() in [".yaml", ".yml"]:
+            files_to_validate.append(path)
+        else:
+            console.print(f"[bold red]✗[/bold red] File {path} is not a YAML file")
+            raise typer.Exit(1)
+    elif path.is_dir():
+        # Find all YAML files recursively
+        files_to_validate.extend(path.rglob("*.yaml"))
+        files_to_validate.extend(path.rglob("*.yml"))
+        files_to_validate.sort()
+
+    if not files_to_validate:
+        console.print(f"[yellow]⚠[/yellow] No YAML files found in {path}")
+        raise typer.Exit(0)
+
+    console.print(f"Found {len(files_to_validate)} YAML file(s) to validate\n")
+
+    # Validate each file
+    valid_count = 0
+    invalid_count = 0
+    errors = []
+
+    for yaml_file in files_to_validate:
+        try:
+            with open(yaml_file, "r") as f:
+                # Try to parse the YAML
+                yaml.safe_load(f)
+            console.print(f"[green]✓[/green] {yaml_file.relative_to(path.parent if path.is_file() else path)}")
+            valid_count += 1
+        except yaml.YAMLError as e:
+            console.print(f"[red]✗[/red] {yaml_file.relative_to(path.parent if path.is_file() else path)}")
+            error_msg = str(e)
+            # Show first line of error for brevity
+            first_line = error_msg.split("\n")[0] if "\n" in error_msg else error_msg
+            console.print(f"  [dim]{first_line}[/dim]")
+            errors.append((yaml_file, e))
+            invalid_count += 1
+        except Exception as e:
+            console.print(f"[red]✗[/red] {yaml_file.relative_to(path.parent if path.is_file() else path)}")
+            console.print(f"  [dim]Error reading file: {e}[/dim]")
+            errors.append((yaml_file, e))
+            invalid_count += 1
+
+    # Summary
+    console.print(f"\n[bold]Validation Summary:[/bold]")
+    console.print(f"  [green]✓[/green] {valid_count} file(s) valid")
+    console.print(f"  [red]✗[/red] {invalid_count} file(s) invalid")
+
+    if errors:
+        console.print(f"\n[bold red]Validation Errors:[/bold red]")
+        for yaml_file, error in errors:
+            console.print(f"\n[yellow]{yaml_file}[/yellow]")
+            console.print(f"  {error}")
+
+    # Exit with error code if any files are invalid
+    if invalid_count > 0:
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold green]✓ All YAML files are valid![/bold green]")
     raise typer.Exit(0)
 
 
