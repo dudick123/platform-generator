@@ -13,13 +13,13 @@ uv pip install -e .
 
 # Run the CLI
 platform-gen --help
-platform-gen validate --config docs/platform.yaml
-platform-gen generate --config docs/platform.yaml
+platform-gen validate --config .data/platform.yaml
+platform-gen generate --config .data/platform.yaml
 
 # Generate for specific tenant/environment
-platform-gen generate --config docs/platform.yaml --tenant bar
-platform-gen generate --config docs/platform.yaml --environment dev
-platform-gen generate --config docs/platform.yaml --dry-run
+platform-gen generate --config .data/platform.yaml --tenant bar
+platform-gen generate --config .data/platform.yaml --environment dev
+platform-gen generate --config .data/platform.yaml --dry-run
 
 # Run tests (when implemented)
 pytest
@@ -311,7 +311,7 @@ When implementing tests:
 1. Add/modify Pydantic models in `config/models.py`
 2. Use `Field(alias="kebab-case")` for YAML keys
 3. Add `class Config: populate_by_name = True` for backward compatibility
-4. Update `docs/platform.yaml` with examples
+4. Update `.data/platform.yaml` with examples
 5. Validators should use `@field_validator` decorator for custom validation
 
 ### Modifying Output Structure

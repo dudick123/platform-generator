@@ -46,7 +46,7 @@ def main(
 @app.command()
 def validate(
     config: Path = typer.Option(
-        Path("platform.yaml"),
+        Path(".data/platform.yaml"),
         "--config",
         "-c",
         help="Path to platform.yaml configuration file",
@@ -97,7 +97,7 @@ def validate(
 @app.command()
 def generate(
     config: Path = typer.Option(
-        Path("platform.yaml"),
+        Path(".data/platform.yaml"),
         "--config",
         "-c",
         help="Path to platform.yaml configuration file",
@@ -296,7 +296,7 @@ def generate(
 @app.command()
 def validate_deployment(
     config: Path = typer.Option(
-        Path("platform.yaml"),
+        Path(".data/platform.yaml"),
         "--config",
         "-c",
         help="Path to platform.yaml configuration file",

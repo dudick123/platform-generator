@@ -1,0 +1,197 @@
+version: v1
+
+metadata:
+  description: "GitOps Platform Generator configuration for Foo Organization"
+
+cli-config:
+  output-directory: "./generated"
+  validate-before-apply: true
+  dry-run-default: true
+  git-commit-message-template: "chore: update {{tenant}}/{{app}}"
+  # Git operations configuration (optional)
+  # git-enabled: false  # Set to true to enable automatic git operations
+  # git-branch-pattern: "feat/platform-{{tenant}}-{{env}}-{{timestamp}}"
+  # git-auto-push: true  # Automatically push to remote after commit
+  output-paths:
+    namespaces: "tenants/{{tenant}}/namespaces/{{env}}/{{cluster}}"
+    resource-quotas: "tenants/{{tenant}}/resourcequotas/{{env}}"
+    network-policies: "tenants/{{tenant}}/networkpolicies/{{env}}"
+    app-projects: "tenants/{{tenant}}/argocd/appprojects/{{env}}"
+    application-sets: "tenants/{{tenant}}/argocd/applicationsets/{{app}}/{{env}}"
+
+platform-base-repo-url: "https://dev.azure.com/foo-org"
+
+defaults:
+  environments:
+    - dev
+    - stage
+    - prod
+
+akp-instances:
+  akp-dev:
+    environment: dev
+    url: "https://dev.akp.foo-org.com"
+    appproject-namespace: "argocd"
+  akp-stage:
+    environment: stage
+    url: "https://stage.akp.foo-org.com"
+    appproject-namespace: "argocd"
+  akp-prod:
+    environment: prod
+    url: "https://prod.akp.foo-org.com"
+    appproject-namespace: "argocd"
+
+platform-clusters:
+  dev-wus3:
+    name: foo-gitops-wus3-dev
+    env: dev
+    region: wus3
+  dev-eus:
+    name: foo-gitops-eus-dev
+    env: dev
+    region: eus
+  stage-wus3:
+    name: foo-gitops-wus3-stage
+    env: stage
+    region: wus3
+  stage-eus:
+    name: foo-gitops-eus-stage
+    env: stage
+    region: eus
+  prod-wus3:
+    name: foo-gitops-wus3-prod
+    env: prod
+    region: wus3
+  prod-eus:
+    name: foo-gitops-eus-prod
+    env: prod
+    region: eus
+
+tenants:
+  - name: tenant-bar
+    short-name: bar
+    long-name: "Tenant Bar"
+    description: "GitOps Tenant for Team Bar"
+    ado-project-url: "https://dev.azure.com/foo-org/bar-project"
+    namespace-config:
+      naming-pattern: "{{short-name}}-gitops-{{env}}"
+      auto-generate-per-cluster: true
+    appproject:
+      description: "AppProject for Team Bar"
+      source-repos:
+        - "https://dev.azure.com/foo-org/Team-Bar/_git/*"
+      destinations:
+        dev:
+          - cluster: "foo-gitops-wus3-dev"
+            namespace: "bar-gitops-dev"
+          - cluster: "foo-gitops-eus-dev"
+            namespace: "bar-gitops-dev"
+          - cluster: "foo-gitops-wus3-dev"
+            namespace: "bar-shared-resources"
+        stage:  
+          - cluster: "foo-gitops-wus3-stage"
+            namespace: "bar-gitops-stage"
+        prod:
+          - cluster: "foo-gitops-wus3-prod"
+            namespace: "bar-gitops-prod"
+    namespaces:
+      dev: bar-gitops-dev
+      stage: bar-gitops-stage
+      prod: bar-gitops-prod
+    resource-quotas:
+      - dev:
+          cpu: "10"
+          memory: "20Gi"
+      - stage:
+          cpu: "10"
+          memory: "20Gi"
+      - prod:
+          cpu: "10"
+          memory: "20Gi"
+    network-policies:
+      enabled: true
+      default-deny-all: true
+      allow-within-namespace: true
+      allow-from-ingress:
+        enabled: true
+        ingress-controller-namespaces:
+          - ingress-nginx
+        ingress-controller-labels:
+          - app: nginx-ingress
+      custom-rules:
+        - name: allow-to-database
+          description: "Allow egress to database CIDR"
+          policy-type: egress
+          egress:
+            - to:
+              - ipBlock:
+                  cidr: 10.100.0.0/16
+              ports:
+                - protocol: TCP
+                  port: 5432
+        - name: allow-from-monitoring
+          description: "Allow ingress from monitoring namespace"
+          policy-type: ingress
+          ingress:
+            - from:
+              - namespaceSelector:
+                  matchLabels:
+                    name: monitoring
+              ports:
+                - protocol: TCP
+                  port: 8080
+    common-labels:
+      team: bar
+      business-unit: sales
+    common-annotations:
+      contact: "Fred Bloggs"
+    applications:
+      - name: bar-mfe-frontend
+        argo-app-type: applicationset
+        generator-type: git-generator
+        repo-url: "https://dev.azure.com/foo-org/Team-Bar/_git/bar-mfe-frontend"
+        config-repo:
+          url: "https://dev.azure.com/foo-org/Team-Bar/_git/bar-gitops-config"
+          revision: HEAD
+          files:
+            - path: "apps/*/config.json"
+        common-labels:
+          team: bar
+        common-annotations:
+          cost-center: "001"
+        environments:
+          dev:
+            - cluster: dev-wus3
+              repo-path: "manifests/dev"
+              labels:
+                region: wus3
+              sync-policy:
+                automated:
+                  prune: true
+                  selfHeal: true
+            - cluster: dev-eus
+              repo-path: "manifests/dev"
+              labels:
+                region: eus
+              sync-policy:
+                automated:
+                  prune: true
+                  selfHeal: true
+          stage:
+            - cluster: stage-wus3
+              repo-path: "manifests/stage"
+              sync-policy:
+                automated:
+                  prune: false
+                  selfHeal: true
+          prod:
+            - cluster: prod-wus3
+              repo-path: "manifests/prod"
+              sync-policy:
+                automated:
+                  prune: false
+                  selfHeal: true
+
+
+
+

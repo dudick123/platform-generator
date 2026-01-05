@@ -41,7 +41,7 @@ uv pip install -e .
 
 ## Quick Start
 
-1. Create or use an existing `platform.yaml` configuration file (see `docs/platform.yaml` for example)
+1. Create or use an existing `platform.yaml` configuration file (see `.data/platform.yaml` for example)
 
 2. Validate your configuration:
 ```bash
