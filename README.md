@@ -889,7 +889,6 @@ spec:
 destinations:
 {% for dest in destinations %}
   - namespace: {{ dest.namespace }}
-    server: {{ dest.server }}
     name: {{ dest.name }}
 {% endfor %}
 ```
@@ -898,8 +897,8 @@ destinations:
 ```python
 context = {
     "destinations": [
-        {"namespace": "app-prod", "server": "https://prod-cluster", "name": "prod-us-east"},
-        {"namespace": "app-prod", "server": "https://prod-cluster-2", "name": "prod-us-west"}
+        {"namespace": "app-prod", "name": "prod-us-east"},
+        {"namespace": "app-prod", "name": "prod-us-west"}
     ]
 }
 ```
@@ -908,15 +907,13 @@ context = {
 ```yaml
 destinations:
   - namespace: app-prod
-    server: https://prod-cluster
     name: prod-us-east
   - namespace: app-prod
-    server: https://prod-cluster-2
     name: prod-us-west
 ```
 
 **Key points**:
-- Access object properties with dot notation: `dest.namespace`, `dest.server`
+- Access object properties with dot notation: `dest.namespace`, `dest.name`
 - Maintain proper YAML list indentation with `- ` prefix
 - Works with Pydantic models (generators pass model objects directly)
 
@@ -931,7 +928,6 @@ spec:
   destinations:
 {% for dest in destinations %}
     - namespace: {{ dest.namespace }}
-      server: {{ dest.server }}
       name: {{ dest.name }}
 {% endfor %}
 ```
@@ -1184,7 +1180,6 @@ spec:
   destinations:
 {% for dest in destinations %}
     - namespace: {{ dest.namespace }}
-      server: {{ dest.server }}
       name: {{ dest.name }}
 {% endfor %}
 ```
@@ -1193,6 +1188,7 @@ spec:
 - Variables: `project_name`, `namespace`, `labels`, `source_repos`, `destinations`
 - Patterns: List iteration (simple and object lists), dictionary iteration
 - Complexity: Medium
+- Note: Destinations use cluster names (not server URLs) for SaaS ArgoCD compatibility
 
 #### NetworkPolicy Template (Complex)
 

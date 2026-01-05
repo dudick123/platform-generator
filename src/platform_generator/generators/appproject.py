@@ -61,14 +61,12 @@ class AppProjectGenerator(BaseGenerator):
                 destinations = appproject.destinations[env]
 
                 # Build destination list for AppProject
+                # Using cluster names as destination names (SaaS ArgoCD pattern)
                 destination_list = []
                 for dest in destinations:
                     destination_list.append({
                         "name": dest.cluster,
                         "namespace": dest.namespace,
-                        # In real deployment, you'd map cluster names to server URLs
-                        # For now, using the cluster name
-                        "server": f"https://{dest.cluster}",
                     })
 
                 # Prepare template context

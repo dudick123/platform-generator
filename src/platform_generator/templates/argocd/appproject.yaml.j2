@@ -25,7 +25,6 @@ spec:
   destinations:
 {% for dest in destinations %}
     - namespace: {{ dest.namespace }}
-      server: {{ dest.server }}
       name: {{ dest.name }}
 {% endfor %}
   clusterResourceWhitelist:

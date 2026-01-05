@@ -20,13 +20,10 @@ spec:
     - https://dev.azure.com/foo-org/Team-Bar/_git/*
   destinations:
     - namespace: bar-gitops-dev
-      server: https://foo-gitops-wus3-dev
       name: foo-gitops-wus3-dev
     - namespace: bar-gitops-dev
-      server: https://foo-gitops-eus-dev
       name: foo-gitops-eus-dev
     - namespace: bar-shared-resources
-      server: https://foo-gitops-wus3-dev
       name: foo-gitops-wus3-dev
   clusterResourceWhitelist:
     - group: '*'
